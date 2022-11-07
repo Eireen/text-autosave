@@ -5,10 +5,29 @@
         <link rel="stylesheet" href="./normalize.min.css">
         <link rel="stylesheet" href="./main.css">
         <script type="text/javascript" src="./jquery-2.2.4.min.js" defer></script>
+        <script type="text/javascript" src="./lib/debounce.js" defer></script>
+        <script type="text/javascript" src="./lib/EventableMixin.js" defer></script>
         <script type="text/javascript" src="./index.js" defer></script>
     </head>
     <body>
         <h1>Text Autosave Demo</h1>
+
+        <div class="draft-message" style="display: none;">
+            <div class="draft-message-text">Обнаружен ранее сохранённый черновик этого поля от [тут дата-время].</div>
+            <div>
+                <button type="button" name="restore_draft">Загрузить черновик</button>
+                <button type="button" name="delete_draft">Удалить черновик</button>
+                <button type="button" name="hide_draft_message" title="Скройся">Х</button>
+            </div>
+        </div>
+
         <textarea name="test_textarea" class="test-textarea" rows="10"></textarea>
+        <p class="message">&nbsp;</p>
+
+        <dl class="faq">
+            <dt class="faq-question">&mdash; Когда происходит сохранение текста?</dt>
+            <dd class="faq-answer">&mdash; Через 3-секундные паузы после изменений, или каждые 5 секунд при непрерывной печати.</dd>
+        </dl>
+
     </body>
 </html>

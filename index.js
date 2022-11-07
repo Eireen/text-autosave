@@ -1,13 +1,4 @@
-;(() => {
-
-/**
- * TODO:
- *    * очистка хранилища _после_успешной_ отправки на сервер (нажатии кнопки "Сохранить") (сделать ручку для очистки прост)
- *    * когда переходим на страницу, для которой есть автосейв - показывать уведомляшку с кнопкой "Восстановить"
- *    * показывать нотис при сохранении (типа галочку "сохранено")
- *    * автоочистка долго не востребованных сейвов (дабы не копились в сторадже)
- */
-
+;(function (window) {
 
 const showDebugInfo = true
 
@@ -15,167 +6,327 @@ const darn = showDebugInfo
     ? console.log.bind(console)
     : function () {}
 
-// См. https://github.com/component/debounce
-window.debounce = function (func, wait, immediate) {
-    var timeout, args, context, timestamp, result;
-    if (null == wait) wait = 100;
 
-    function later() {
-        var last = Date.now() - timestamp;
+////////////////////////////////////////////////////////////////////////////////
 
-        if (last < wait && last >= 0) {
-            timeout = setTimeout(later, wait - last);
-        } else {
-            timeout = null;
-            if (!immediate) {
-                result = func.apply(context, args);
-                context = args = null;
+// Dependencies
+let deps = {
+    debounce: null,
+    EventableMixin: null,
+}
+
+function DepsMixin (depNames, objToExtend) {
+
+    return Object.assign(objToExtend, {
+
+        setDeps(customDeps = null) {
+            for (let depName of depNames) {
+                deps[depName] = customDeps && customDeps[depName] !== undefined
+                    ? customDeps[depName]
+                    : window[depName]
+            }
+        },
+
+        checkDeps() {
+            const className = objToExtend.name
+
+            for (let depName in deps) {
+                if (!deps[depName]) throw `Before using \`${className}\`, you must either include scripts from \`lib\` directory, or pass dependencies explicitly via calling \`setDeps\` before initialization.`
+            }
+
+            const { constructor: _static } = this
+            _static.areDepsSet = true
+        },
+
+    })
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+
+/**
+ * Демка: https://plnkr.co/plunk/KNJz3eNe77XPLTwc
+ * 
+ * По подключению зависимостей:
+ *    * `debounce` и `EventableMixin` выделены в отдельные файлы, которые пользователь либы должен подключить сам;
+ *    * на случай конфликтов имён в целевых проектах - можно передать зависимости с другими именами:
+ *        `TextAutosaver.setDeps({ debounce: myDebounceFunction, EventableMixin: myEventableMixin })`
+ */
+window.TextAutosaver = DepsMixin (['debounce', 'EventableMixin'], class {
+
+    constructor (input, options) {
+
+        const { constructor: _static } = this
+
+        if (!_static.areDepsSet) {
+            _static.setDeps()
+            _static.checkDeps()
+        }
+
+        this.$input = $(input)
+        this.options = Object.assign({}, _static.defaultOptions(), options)
+
+        this.lastChangeTimestamp = 0
+        this.lastSaveTimestamp = 0
+
+        // Когда пользователь печатает без пауз, debounce может долго не срабатывать -
+        // на этот случай ставим интервальные сохранения
+        this.saveIntervalHandle = null
+
+        deps.EventableMixin (this)
+
+        if (!_static.areStaleCleared) {
+            // Вызываем очистку невостребованных сейвов 1 раз за период жизни страницы
+            this.clearStaleSaves()
+            _static.areStaleCleared = true
+        }
+
+        this.init()
+    }
+
+    static defaultOptions () {
+        return {
+            storageNamespace: 'autosaves',
+            afterChangeDelay: 3000,
+            maxSaveInterval: 5000,
+        }
+    }
+
+    getStorageKeyForInput () {
+        const { $input } = this
+        const inputStorageKey = this.getPageIdByUrl() + '___' + ($input.attr('name') || '')
+        darn('inputStorageKey = ', inputStorageKey)
+        return inputStorageKey
+    }
+
+    init () {
+        const { $input } = this
+        const {
+            storageNamespace,
+            afterChangeDelay,
+            maxSaveInterval,
+        } = this.options
+
+
+        $input.on('input', () => {
+            this.lastChangeTimestamp = +new Date()
+            // darn('lastChangeTimestamp update ', this.lastChangeTimestamp)
+
+            // Заново ставим интервальные сохранения при изменении (начальном или после паузы)
+            if (!this.saveIntervalHandle) {
+                this.installSaveInterval ()
+            }
+        })
+
+
+        // Throttling тут меньше подходит, т.к. с высокой вероятностью будет сохранять текст с обрывками слов.
+        // Debounce срабатывает на паузах ввода, это немного "поумнее"
+        $input.on('input', debounce(() => { // keyup, copy, paste, cut
+
+            if (this.lastChangeTimestamp > this.lastSaveTimestamp) {
+                darn('Saving after debounce...')
+                this.save()
+            } else {
+                darn('Saving after debounce: already saved, skipping...')
+            }
+
+            // Убираем интервал после паузы
+            this.uninstallSaveInterval()
+
+        }, afterChangeDelay));
+    }
+
+    save() {
+        const { $input } = this
+        const {
+            storageNamespace,
+        } = this.options
+
+        const allSaves = this.getAllSaves()
+
+        const inputStorageKey = this.getStorageKeyForInput()
+
+        const newSave = {
+            timestamp: this.getTimestamp(),
+            value: $input.val(),
+        }
+        allSaves[inputStorageKey] = newSave
+
+        this.writeAllSaves(allSaves)
+
+        this.lastSaveTimestamp = +new Date()
+
+        darn('Saved: ', newSave)
+
+        this.triggerEvent('save')
+    }
+
+    writeAllSaves(newAllSaves) {
+        const {
+            storageNamespace,
+        } = this.options
+
+        localStorage[storageNamespace] = JSON.stringify(newAllSaves)
+
+        darn('Wrote full dump: ', localStorage[storageNamespace])
+    }
+
+    installSaveInterval () {
+        const {
+            maxSaveInterval,
+        } = this.options
+
+        this.saveIntervalHandle = setInterval(() => {
+            darn(`Last save ${this.lastChangeTimestamp - this.lastSaveTimestamp} ms ago`)
+            if (this.lastChangeTimestamp - this.lastSaveTimestamp > maxSaveInterval) {
+                darn('Saving by maxSaveInterval...')
+                this.save()
+            }
+        }, maxSaveInterval)
+
+        darn('Installed interval')
+    }
+
+    uninstallSaveInterval () {
+        darn('Clear interval')
+        clearInterval(this.saveIntervalHandle)
+        this.saveIntervalHandle = null
+    }
+
+    // Get page id by URL (типа неймспейс для разграничения полей)
+    getPageIdByUrl (urlArg) {
+        let url = urlArg === undefined
+            ? location.pathname
+            : String(urlArg)
+
+        // Remove query part (if exists)
+        url = url.split('?')[0]
+
+        // remove enclosing slashes
+        url = url.replace(/^\/|\/$/g, '')
+
+        // Empty path redirects to the dashboard at the moment
+        if (!url) url = 'dashboard'
+
+        return url
+    }
+
+    getAllSaves () {
+        const { storageNamespace } = this.options
+
+        let allSaves = {}
+
+        if (localStorage[storageNamespace]) {
+            try {
+                allSaves = JSON.parse(localStorage[storageNamespace])
+            } catch (error) {
+                console.error(error)
+                return allSaves
             }
         }
-    };
 
-    var debounced = function() {
-        context = this;
-        args = arguments;
-        timestamp = Date.now();
-        var callNow = immediate && !timeout;
-        if (!timeout) timeout = setTimeout(later, wait);
-        if (callNow) {
-            result = func.apply(context, args);
-            context = args = null;
-        }
-
-        return result;
-    };
-
-    debounced.clear = function() {
-        if (timeout) {
-            clearTimeout(timeout);
-            timeout = null;
-        }
-    };
-
-    debounced.flush = function() {
-        if (timeout) {
-            result = func.apply(context, args);
-            context = args = null;
-
-            clearTimeout(timeout);
-            timeout = null;
-        }
-    };
-
-    return debounced;
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-// Get page id by URL (типа неймспейс для разграничения полей)
-window.getPageIdByUrl = function (urlArg) {
-    let url = urlArg === undefined
-        ? location.pathname
-        : String(urlArg)
-
-    // Remove query part (if exists)
-    url = url.split('?')[0]
-
-    // remove enclosing slashes
-    url = url.replace(/^\/|\/$/g, '')
-
-    // Empty path redirects to the dashboard at the moment
-    if (!url) url = 'dashboard'
-
-    return url
-}
-
-////////////////////////////////////////////////////////////////////////////////
-
-
-class TextAutosaver {
-
-    constructor (input) {
-        this._input = input
+        return allSaves
     }
-}
+
+    getSave () {
+        const allSaves = this.getAllSaves()
+
+        const inputStorageKey = this.getStorageKeyForInput()
+
+        return allSaves[inputStorageKey]
+    }
+
+    // Удалить сейв своего поля
+    deleteSave () {
+        const inputStorageKey = this.getStorageKeyForInput()
+        this.deleteSavesForInputs([ inputStorageKey ])
+    }
+
+    // Удалить сейв
+    deleteSavesForInputs (inputSaveIds) { // static
+        if (!inputSaveIds.length) return
+
+        const allSaves = this.getAllSaves()
+
+        for (let inputSaveId of inputSaveIds) {
+            delete allSaves[inputSaveId]
+        }
+
+        this.writeAllSaves(allSaves)
+    }
+
+    // Установить сейв в поле - ?
+    restore () {
+        const { $input } = this
+        const save = this.getSave()
+        $input.val(save.value)
+    }
+
+    // Автоочистка долго не востребованных сейвов (дабы не забивали сторадж)
+    clearStaleSaves () { // static
+        const LIFETIME_TS = 60 * 60 * 24 * 7  // 7 days
+        const allSaves = this.getAllSaves()
+
+        const inputSaveIdsToDelete = []
+
+        for (let inputSaveId in allSaves) {
+            const save = allSaves[inputSaveId]
+            const nowTimestamp = this.getTimestamp()
+            if (nowTimestamp - save.timestamp > LIFETIME_TS) {
+                // Save is stale
+                inputSaveIdsToDelete.push(inputSaveId)
+            }
+        }
+
+        this.deleteSavesForInputs(inputSaveIdsToDelete)
+
+        if (inputSaveIdsToDelete.length) darn('Cleared stale saves: ', inputSaveIdsToDelete)
+    }
+
+    getTimestamp() { // static
+        return Math.round(+new Date() / 1000)
+    }
+})
+
+
+
+// ---------------------- USAGE ----------------------
 
 $.fn.autosave = function (options) {
     const $input = this
 
-    const {
-        storageNamespace = 'autosaves',
-        afterChangeDelay = 3000,
-        maxSaveInterval = 5000,
-    } = options
+    const autosaver = new TextAutosaver ($input, options)
 
-    const inputStorageKey = getPageIdByUrl() + '___' + ($input.attr('name') || '')
-    darn('inputStorageKey = ', inputStorageKey)
+    $input.data('textAutosaver', autosaver)
 
-    let lastSaveTimestamp = 0
-
-
-    // Когда пользователь печатает без пауз, debounce может долго не срабатывать -
-    // на этот случай ставим интервальные сохранения
-    let saveIntervalHandler
-
-    function setupSaveIntervalHandler () {
-        return setInterval(function () {
-            darn(`Last save ${lastChangeTimestamp - lastSaveTimestamp} ms ago`)
-            if (lastChangeTimestamp - lastSaveTimestamp > maxSaveInterval) {
-                darn('Saving by maxSaveInterval...')
-                save()
-            }
-        }, maxSaveInterval)
+    const save = autosaver.getSave()
+    if (save) {
+        const $draftMessage = $('.draft-message')
+        $draftMessage.show()
+            .find('button[name="restore_draft"]')
+                .click(function() {
+                    autosaver.restore()
+                    $draftMessage.hide()
+                })
+                .end()
+            .find('button[name="delete_draft"]')
+                .click(function() {
+                    autosaver.deleteSave()
+                    $draftMessage.hide()
+                })
+                .end()
+            .find('button[name="hide_draft_message"]')
+                .click(function() {
+                    $draftMessage.hide()
+                })
     }
 
-
-    let lastChangeTimestamp = 0
-    $input.on('input', function () {
-        lastChangeTimestamp = +new Date()
-        darn('lastChangeTimestamp update ', lastChangeTimestamp)
-
-        // Заново ставим интервальные сохранения при изменении (начальном или после паузы)
-        if (!saveIntervalHandler) {
-            saveIntervalHandler = setupSaveIntervalHandler ()
-            darn('Installed interval')
-        }
+    autosaver.on('save', function () {
+        $('.message').html('<span class="message-success">Saved!</span>')
+        setTimeout(() => {
+            $('.message').html('&nbsp;') // чтоб не схлопывался
+        }, 2500)
     })
-
-
-    // Throttling тут меньше подходит, т.к. с высокой вероятностью будет сохранять текст с обрывками слов.
-    // Debounce срабатывает на паузах ввода, это немного "поумнее"
-    $input.on('input', debounce(function() { // keyup, copy, paste, cut
-
-        darn('Saving after debounce...')
-        save()
-
-        // Убираем интервал после паузы
-        darn('Clear interval')
-        clearInterval(saveIntervalHandler)
-        saveIntervalHandler = null
-
-    }, afterChangeDelay));
-
-
-    function save() {
-        let storage = localStorage[storageNamespace]
-        if (storage) {
-            try {
-                storage = JSON.parse(localStorage[storageNamespace])
-            } catch (error) {
-                console.error(error)
-                return
-            }
-        } else {
-            storage = {}
-        }
-
-        storage[inputStorageKey] = $input.val();
-        localStorage[storageNamespace] = JSON.stringify(storage);
-
-        lastSaveTimestamp = +new Date()
-
-        darn('Saved: ', localStorage[storageNamespace])
-    }
 }
 
 $('[name="test_textarea"]').autosave({
@@ -185,4 +336,4 @@ $('[name="test_textarea"]').autosave({
 // + `data-autosave-on` HTML attribute maybe?
 
 
-})();
+})(window);

@@ -31,3 +31,26 @@ h1 {
     margin-top: .2em;
     font-size: 24px;
 }
+.faq-question {
+    font-weight: bold;
+}
+.faq-answer {
+    margin-left: 0;
+    margin-top: 3px;
+}
+.message-success {
+    color: green;
+    font-weight: bold;
+}
+.message-warning {
+    color: darkgoldenrod;
+    font-weight: bold;
+}
+.draft-message {
+    background-color: #FFBA95;
+    padding: 10px;
+    margin-bottom: 15px;
+}
+.draft-message-text {
+    font-weight: bold;
+}
