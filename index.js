@@ -28,10 +28,15 @@ function DepsMixin (depNames, objToExtend) {
         },
 
         checkDeps() {
-            const className = objToExtend.name
+            // const className = objToExtend.name
 
             for (let depName in deps) {
-                if (!deps[depName]) throw `Before using \`${className}\`, you must either include scripts from \`lib\` directory, or pass dependencies explicitly via calling \`setDeps\` before initialization.`
+                if (!deps[depName]) {
+                    const message = depName === 'jQuery'
+                        ? `\`TextAutosaver\` requires jQuery (tested version is 2.2.4)`
+                        : `Cannot find dependency: \`${depName}\`.\nBefore using \`TextAutosaver\`, you must either include scripts from \`lib\` directory, or pass dependencies explicitly via calling \`setDeps\` before initialization.`
+                    throw message
+                }
             }
 
             const { constructor: _static } = this
@@ -52,9 +57,13 @@ function DepsMixin (depNames, objToExtend) {
  *    * на случай конфликтов имён в целевых проектах - можно передать зависимости с другими именами:
  *        `TextAutosaver.setDeps({ debounce: myDebounceFunction, EventableMixin: myEventableMixin })`
  */
-window.TextAutosaver = DepsMixin (['debounce', 'EventableMixin'], class {
+window.TextAutosaver = DepsMixin (['jQuery', 'debounce', 'EventableMixin'], class {
 
     constructor (input, options) {
+
+        if (options.showDebugInfo !== undefined) {
+            ;({ showDebugInfo } = options)
+        }
 
         const { constructor: _static } = this
 
@@ -287,53 +296,6 @@ window.TextAutosaver = DepsMixin (['debounce', 'EventableMixin'], class {
         return Math.round(+new Date() / 1000)
     }
 })
-
-
-
-// ---------------------- USAGE ----------------------
-
-$.fn.autosave = function (options) {
-    const $input = this
-
-    const autosaver = new TextAutosaver ($input, options)
-
-    $input.data('textAutosaver', autosaver)
-
-    const save = autosaver.getSave()
-    if (save) {
-        const $draftMessage = $('.draft-message')
-        $draftMessage.show()
-            .find('button[name="restore_draft"]')
-                .click(function() {
-                    autosaver.restore()
-                    $draftMessage.hide()
-                })
-                .end()
-            .find('button[name="delete_draft"]')
-                .click(function() {
-                    autosaver.deleteSave()
-                    $draftMessage.hide()
-                })
-                .end()
-            .find('button[name="hide_draft_message"]')
-                .click(function() {
-                    $draftMessage.hide()
-                })
-    }
-
-    autosaver.on('save', function () {
-        $('.message').html('<span class="message-success">Saved!</span>')
-        setTimeout(() => {
-            $('.message').html('&nbsp;') // чтоб не схлопывался
-        }, 2500)
-    })
-}
-
-$('[name="test_textarea"]').autosave({
-    storageNamespace: 'autosaves',
-});
-
-// + `data-autosave-on` HTML attribute maybe?
 
 
 })(window);
